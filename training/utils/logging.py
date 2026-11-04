@@ -206,9 +206,9 @@ def setup_mlflow(mf: MLflowConfig, config: dict[str, Any]) -> bool:
         logger.warning("mlflow not installed; metrics will not be logged to MLflow")
         return False
 
-    if mf.tracking_uri:
-        mlflow.set_tracking_uri(mf.tracking_uri)
     try:
+        if mf.tracking_uri:
+            mlflow.set_tracking_uri(mf.tracking_uri)
         if mf.experiment_name:
             mlflow.set_experiment(mf.experiment_name)
         mlflow.start_run(run_name=mf.run_name)
@@ -229,7 +229,10 @@ def setup_mlflow(mf: MLflowConfig, config: dict[str, Any]) -> bool:
             mlflow.log_params(params)
         except Exception:
             logger.warning("Failed to log config params to MLflow", exc_info=True)
-    run = mlflow.active_run()
+    try:
+        run = mlflow.active_run()
+    except Exception:
+        run = None
     if run is not None:
         logger.info("MLflow run id: %s", run.info.run_id)
     return True
@@ -251,6 +254,8 @@ def setup_logging(
     ``project``/``run_name`` are shared across backends: W&B project/run
     name and MLflow experiment/run name. A backend explicitly selected but
     missing its settings (e.g. no W&B entity) logs a warning and is skipped.
+    For MLflow, a ``MLFLOW_EXPERIMENT_NAME`` in the environment takes
+    precedence over the shared ``project`` (usually a recipe default).
     """
     selected = set(lc.loggers) if lc.loggers is not None else set(_KNOWN_BACKENDS)
     unknown = selected - set(_KNOWN_BACKENDS)
@@ -283,13 +288,15 @@ def setup_logging(
             or os.environ.get("MLFLOW_TRACKING_URI")
             or os.environ.get("MLFLOW_EXPERIMENT_NAME")
         )
+        # A deliberate env experiment beats the shared (usually default) project.
+        mlflow_experiment = os.environ.get("MLFLOW_EXPERIMENT_NAME") or lc.project
         # In auto mode the shared project alone must not enable MLflow:
         # recipes set a default project, which would otherwise spawn a local
         # ./mlruns run on every training job.
         if (explicit or mlflow_auto) and setup_mlflow(
             MLflowConfig(
                 tracking_uri=lc.mlflow_tracking_uri,
-                experiment_name=lc.project,
+                experiment_name=mlflow_experiment,
                 run_name=lc.run_name,
             ),
             config,
@@ -338,19 +345,18 @@ def mlflow_log(metrics: dict[str, Any], step: int | None = None) -> None:
         import mlflow
     except ImportError:
         return
-    if mlflow.active_run() is None:
-        return
-    numeric = {
-        key: float(value)
-        for key, value in metrics.items()
-        if isinstance(value, Real)
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-    }
-    if not numeric:
-        return
     try:
-        mlflow.log_metrics(numeric, step=step)
+        if mlflow.active_run() is None:
+            return
+        numeric = {
+            key: float(value)
+            for key, value in metrics.items()
+            if isinstance(value, Real)
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+        }
+        if numeric:
+            mlflow.log_metrics(numeric, step=step)
     except Exception:
         logger.warning("Failed to log metrics to MLflow", exc_info=True)
 
@@ -522,17 +528,20 @@ def mlflow_finish(*, metrics_file: str | None = None) -> None:
         import mlflow
     except ImportError:
         return
-    if mlflow.active_run() is None:
-        return
-    if metrics_file and os.path.isfile(metrics_file):
-        try:
-            mlflow.log_artifact(metrics_file, artifact_path="metrics")
-        except Exception:
-            logger.warning(
-                "Failed to attach canonical metrics to MLflow",
-                exc_info=True,
-            )
-    mlflow.end_run()
+    try:
+        if mlflow.active_run() is None:
+            return
+        if metrics_file and os.path.isfile(metrics_file):
+            try:
+                mlflow.log_artifact(metrics_file, artifact_path="metrics")
+            except Exception:
+                logger.warning(
+                    "Failed to attach canonical metrics to MLflow",
+                    exc_info=True,
+                )
+        mlflow.end_run()
+    except Exception:
+        logger.warning("Failed to finish the MLflow run", exc_info=True)
 
 
 def finish_logging(*, metrics_file: str | None = None) -> None:

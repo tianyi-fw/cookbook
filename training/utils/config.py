@@ -298,7 +298,8 @@ class LoggingConfig:
     otherwise spawn a local ``./mlruns`` run on every job.
 
     ``project`` is the shared run grouping: the W&B project and the MLflow
-    experiment name. ``run_name`` names the run in every enabled backend.
+    experiment name (a ``MLFLOW_EXPERIMENT_NAME`` env var wins over it).
+    ``run_name`` names the run in every enabled backend.
     """
 
     loggers: tuple[Literal["wandb", "mlflow"], ...] | None = None

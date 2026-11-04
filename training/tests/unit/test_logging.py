@@ -267,6 +267,18 @@ class TestSetupMlflow:
         assert fake.active_run() is None
         assert "MLflow run setup failed" in caplog.text
 
+    def test_invalid_tracking_uri_disables_mlflow(self, monkeypatch, caplog):
+        fake = _install_fake_mlflow(monkeypatch)
+
+        def fail_set_tracking_uri(_uri):
+            raise ValueError("invalid uri")
+
+        fake.set_tracking_uri = fail_set_tracking_uri
+
+        assert setup_mlflow(MLflowConfig(tracking_uri="::bad::"), {}) is False
+        assert fake.active_run() is None
+        assert "MLflow run setup failed" in caplog.text
+
     def test_param_failure_does_not_block_setup(self, monkeypatch, caplog):
         fake = _install_fake_mlflow(monkeypatch)
 
@@ -311,6 +323,32 @@ def test_log_metrics_fans_out_to_wandb_and_mlflow_simultaneously(
 
     assert wandb_logged == [{"train/loss": 0.5, "step": 2}]
     assert fake_mlflow.calls == [("log_metrics", {"train/loss": 0.5, "step": 2.0}, 2)]
+
+
+def test_mlflow_log_swallows_active_run_lookup_errors(monkeypatch, caplog):
+    fake = _install_fake_mlflow(monkeypatch)
+
+    def fail_active_run():
+        raise RuntimeError("lookup blew up")
+
+    fake.active_run = fail_active_run
+
+    mlflow_log({"a": 1}, step=1)  # must not propagate
+
+    assert "Failed to log metrics to MLflow" in caplog.text
+
+
+def test_mlflow_finish_swallows_lookup_errors(monkeypatch, caplog):
+    fake = _install_fake_mlflow(monkeypatch)
+
+    def fail_active_run():
+        raise RuntimeError("lookup blew up")
+
+    fake.active_run = fail_active_run
+
+    mlflow_finish(metrics_file="/metrics.jsonl")  # must not propagate
+
+    assert "Failed to finish the MLflow run" in caplog.text
 
 
 def test_mlflow_log_skips_non_numeric_and_non_finite_values(monkeypatch):
@@ -445,6 +483,15 @@ class TestSetupLogging:
         assert init_kwargs["name"] == "r"
         assert ("set_experiment", "proj") in fake_mlflow.calls
         assert ("start_run", "r") in fake_mlflow.calls
+
+    def test_env_experiment_name_wins_over_shared_project(self, monkeypatch):
+        monkeypatch.setenv("MLFLOW_EXPERIMENT_NAME", "env-exp")
+        fake = _install_fake_mlflow(monkeypatch)
+
+        active = setup_logging(LoggingConfig(loggers=("mlflow",), project="proj"), {})
+
+        assert active == ["mlflow"]
+        assert ("set_experiment", "env-exp") in fake.calls
 
     def test_explicit_loggers_select_backends(self, monkeypatch):
         fake_wandb = _install_fake_wandb(monkeypatch)
